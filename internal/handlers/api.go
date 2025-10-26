@@ -80,8 +80,11 @@ func (h *APIHandler) UploadFile(w http.ResponseWriter, r *http.Request) {
 		slug = &s
 	}
 
+	// Parse replace parameter
+	replace := r.FormValue("replace") == "true"
+
 	// Save file
-	savedFile, err := h.fileService.SaveFile(fileHeader, expiresAt, password, slug)
+	savedFile, err := h.fileService.SaveFile(fileHeader, expiresAt, password, slug, replace)
 	if err != nil {
 		if errors.Is(err, services.ErrSlugTaken) {
 			respondError(w, "Slug already taken", http.StatusConflict)

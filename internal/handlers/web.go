@@ -87,8 +87,11 @@ func (h *WebHandler) UploadFileWeb(w http.ResponseWriter, r *http.Request) {
 		slug = &s
 	}
 
+	// Parse replace parameter
+	replace := r.FormValue("replace") == "true"
+
 	// Save file
-	_, err = h.fileService.SaveFile(fileHeader, expiresAt, password, slug)
+	_, err = h.fileService.SaveFile(fileHeader, expiresAt, password, slug, replace)
 	if err != nil {
 		if errors.Is(err, services.ErrSlugTaken) {
 			http.Error(w, "Slug already taken", http.StatusConflict)

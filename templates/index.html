@@ -189,6 +189,13 @@
                         <label for="password">Password Protection (Optional)</label>
                         <input type="password" id="password" name="password" placeholder="Leave blank for no password">
                     </div>
+                    <div class="form-group">
+                        <label style="display: flex; align-items: center; cursor: pointer; user-select: none;">
+                            <input type="checkbox" id="replace" name="replace" value="true" style="width: auto; margin-right: 8px;">
+                            <span>Replace if filename exists</span>
+                        </label>
+                        <p class="help-text">If checked and a file with the same name exists, it will be replaced (keeps slug, password, and expiry).</p>
+                    </div>
                     <button type="submit" id="upload-button">Upload File</button>
                 </form>
 

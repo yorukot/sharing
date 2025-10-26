@@ -43,7 +43,18 @@ func NewFileService(storageBackend storage.Storage) *FileService {
 }
 
 // SaveFile saves an uploaded file to storage and creates a database record
-func (s *FileService) SaveFile(fileHeader *multipart.FileHeader, expiresAt *time.Time, password *string, slug *string) (*models.File, error) {
+// If replace is true and a file with the same original name exists, it will replace that file's content
+func (s *FileService) SaveFile(fileHeader *multipart.FileHeader, expiresAt *time.Time, password *string, slug *string, replace bool) (*models.File, error) {
+	// Check if we should replace an existing file
+	if replace {
+		existingFile, err := s.GetFileByOriginalName(fileHeader.Filename)
+		if err == nil {
+			// File exists, replace it
+			return s.ReplaceFileByOriginalName(existingFile, fileHeader)
+		}
+		// File doesn't exist or error occurred, continue with normal save
+		// (errors other than ErrFileNotFound will be caught later)
+	}
 	// Generate unique filename
 	uniqueFilename, err := s.generateUniqueFilename(fileHeader.Filename)
 	if err != nil {
@@ -220,9 +231,9 @@ func (s *FileService) UpdateFile(id uint, expiresAt *time.Time, password *string
 		if err := s.validateSlug(*slug); err != nil {
 			return nil, err
 		}
-		// Check if slug is unique (excluding current file)
+		// Check if slug is unique (excluding current file and soft-deleted files)
 		var count int64
-		database.DB.Model(&models.File{}).Where("slug = ? AND id != ?", *slug, id).Count(&count)
+		database.DB.Model(&models.File{}).Where("slug = ? AND id != ? AND deleted_at IS NULL", *slug, id).Count(&count)
 		if count > 0 {
 			return nil, ErrSlugTaken
 		}
@@ -279,6 +290,51 @@ func (s *FileService) ValidatePassword(file *models.File, password string) error
 	return nil
 }
 
+// ReplaceFileByOriginalName replaces an existing file's content while preserving metadata
+func (s *FileService) ReplaceFileByOriginalName(existingFile *models.File, fileHeader *multipart.FileHeader) (*models.File, error) {
+	// Generate new unique filename
+	uniqueFilename, err := s.generateUniqueFilename(fileHeader.Filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate filename: %w", err)
+	}
+
+	// Open uploaded file
+	src, err := fileHeader.Open()
+	if err != nil {
+		return nil, fmt.Errorf("failed to open uploaded file: %w", err)
+	}
+	defer src.Close()
+
+	// Save new file to storage backend
+	storagePath, err := s.storage.Save(src, uniqueFilename, fileHeader.Size)
+	if err != nil {
+		return nil, fmt.Errorf("failed to save file to storage: %w", err)
+	}
+
+	// Delete old file from storage
+	if err := s.storage.Delete(existingFile.FilePath); err != nil {
+		// Try to clean up new file if old deletion fails
+		s.storage.Delete(storagePath)
+		return nil, fmt.Errorf("failed to delete old file from storage: %w", err)
+	}
+
+	// Update database record with new file details
+	updates := map[string]interface{}{
+		"filename":     uniqueFilename,
+		"file_path":    storagePath,
+		"file_size":    fileHeader.Size,
+		"content_type": fileHeader.Header.Get("Content-Type"),
+	}
+
+	if err := database.DB.Model(existingFile).Updates(updates).Error; err != nil {
+		// Old file is already deleted, so we can't fully rollback
+		return nil, fmt.Errorf("failed to update database record: %w", err)
+	}
+
+	// Reload to get updated values
+	return s.GetFile(existingFile.ID)
+}
+
 // CleanupExpiredFiles removes expired files from storage and database
 func (s *FileService) CleanupExpiredFiles() error {
 	var expiredFiles []models.File
@@ -322,9 +378,9 @@ func (s *FileService) generateUniqueFilename(originalName string) (string, error
 
 // makeOriginalNameUnique ensures the original filename is unique by appending hex prefix if needed
 func (s *FileService) makeOriginalNameUnique(originalName, uniqueFilename string) string {
-	// Check if original name already exists
+	// Check if original name already exists (excluding soft-deleted)
 	var count int64
-	database.DB.Model(&models.File{}).Where("original_name = ?", originalName).Count(&count)
+	database.DB.Model(&models.File{}).Where("original_name = ? AND deleted_at IS NULL", originalName).Count(&count)
 
 	if count == 0 {
 		// No duplicate, return as-is
@@ -349,9 +405,9 @@ func (s *FileService) makeOriginalNameUnique(originalName, uniqueFilename string
 
 // makeFilenameAndSlugUnique ensures both the original filename and slug are unique (returns same value for both)
 func (s *FileService) makeFilenameAndSlugUnique(originalName, uniqueFilename string) (string, error) {
-	// Check if original name already exists in either original_name or slug columns
+	// Check if original name already exists in either original_name or slug columns (excluding soft-deleted)
 	var count int64
-	database.DB.Model(&models.File{}).Where("original_name = ? OR slug = ?", originalName, originalName).Count(&count)
+	database.DB.Model(&models.File{}).Where("(original_name = ? OR slug = ?) AND deleted_at IS NULL", originalName, originalName).Count(&count)
 
 	if count == 0 {
 		// No duplicate, return as-is
@@ -373,8 +429,8 @@ func (s *FileService) makeFilenameAndSlugUnique(originalName, uniqueFilename str
 
 		uniqueName := fmt.Sprintf("%s-%s%s", basename, suffix, ext)
 
-		// Check if this is unique
-		database.DB.Model(&models.File{}).Where("original_name = ? OR slug = ?", uniqueName, uniqueName).Count(&count)
+		// Check if this is unique (excluding soft-deleted)
+		database.DB.Model(&models.File{}).Where("(original_name = ? OR slug = ?) AND deleted_at IS NULL", uniqueName, uniqueName).Count(&count)
 		if count == 0 {
 			return uniqueName, nil
 		}
@@ -397,7 +453,7 @@ func (s *FileService) validateSlug(slug string) error {
 // checkSlugUnique checks if a slug is already taken
 func (s *FileService) checkSlugUnique(slug string) error {
 	var count int64
-	database.DB.Model(&models.File{}).Where("slug = ?", slug).Count(&count)
+	database.DB.Model(&models.File{}).Where("slug = ? AND deleted_at IS NULL", slug).Count(&count)
 	if count > 0 {
 		return ErrSlugTaken
 	}
