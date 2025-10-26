@@ -33,6 +33,92 @@ func NewPublicHandler(storageBackend storage.Storage) *PublicHandler {
 	}
 }
 
+// renderPasswordPrompt renders a unified password prompt page
+func (h *PublicHandler) renderPasswordPrompt(w http.ResponseWriter, slug, filename string, statusCode int) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(statusCode)
+	w.Write([]byte(`<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Password Required</title>
+	<style>
+		* { margin: 0; padding: 0; box-sizing: border-box; }
+		body {
+			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			min-height: 100vh;
+			background: #f5f5f5;
+		}
+		.container {
+			max-width: 450px;
+			width: 90%;
+			text-align: center;
+		}
+		h1 {
+			font-size: 24px;
+			font-weight: 600;
+			color: #000;
+			margin-bottom: 10px;
+		}
+		p {
+			font-size: 14px;
+			color: #666;
+			margin-bottom: 30px;
+		}
+		input[type="password"] {
+			width: 100%;
+			padding: 12px 16px;
+			border: 1px solid #ddd;
+			border-radius: 4px;
+			font-size: 14px;
+			margin-bottom: 15px;
+			background: white;
+		}
+		input[type="password"]:focus {
+			outline: none;
+			border-color: #3498db;
+		}
+		button {
+			width: 100%;
+			padding: 12px;
+			background: #3498db;
+			color: white;
+			border: none;
+			border-radius: 4px;
+			font-size: 14px;
+			font-weight: 500;
+			cursor: pointer;
+			transition: background 0.2s;
+		}
+		button:hover {
+			background: #2980b9;
+		}
+	</style>
+</head>
+<body>
+	<div class="container">
+		<h1>Password Required</h1>
+		<p>This file is password protected.</p>
+		<form onsubmit="download(event)">
+			<input type="password" id="pwd" placeholder="Enter password" required autofocus>
+			<button type="submit">Download</button>
+		</form>
+	</div>
+	<script>
+		function download(e) {
+			e.preventDefault();
+			const pwd = document.getElementById('pwd').value;
+			window.location.href = '/d/` + slug + `?password=' + encodeURIComponent(pwd);
+		}
+	</script>
+</body>
+</html>`))
+}
+
 // SharePage redirects directly to download (with password prompt if needed)
 func (h *PublicHandler) SharePage(w http.ResponseWriter, r *http.Request) {
 	slug := chi.URLParam(r, "slug")
@@ -53,87 +139,7 @@ func (h *PublicHandler) SharePage(w http.ResponseWriter, r *http.Request) {
 
 	// If password protected, show simple password prompt
 	if file.HasPassword() {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`<!DOCTYPE html>
-<html>
-<head>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Password Required - ` + file.OriginalName + `</title>
-	<style>
-		body {
-			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-			display: flex;
-			align-items: center;
-			justify-content: center;
-			min-height: 100vh;
-			margin: 0;
-			background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-		}
-		.box {
-			background: white;
-			padding: 40px;
-			border-radius: 12px;
-			box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-			max-width: 400px;
-			width: 90%;
-			text-align: center;
-		}
-		h2 { color: #2c3e50; margin-bottom: 10px; }
-		p { color: #7f8c8d; margin-bottom: 20px; }
-		.filename {
-			background: #f8f9fa;
-			padding: 10px;
-			border-radius: 6px;
-			margin-bottom: 20px;
-			word-break: break-word;
-			font-family: monospace;
-			font-size: 13px;
-		}
-		input {
-			width: 100%;
-			padding: 12px;
-			border: 1px solid #ddd;
-			border-radius: 6px;
-			font-size: 14px;
-			margin-bottom: 15px;
-			box-sizing: border-box;
-		}
-		button {
-			width: 100%;
-			padding: 12px;
-			background: #3498db;
-			color: white;
-			border: none;
-			border-radius: 6px;
-			font-size: 14px;
-			font-weight: 500;
-			cursor: pointer;
-			transition: background 0.3s;
-		}
-		button:hover { background: #2980b9; }
-	</style>
-</head>
-<body>
-	<div class="box">
-		<h2>🔒 Password Required</h2>
-		<p>This file is password protected</p>
-		<div class="filename">` + file.OriginalName + `</div>
-		<form onsubmit="download(event)">
-			<input type="password" id="pwd" placeholder="Enter password" required autofocus>
-			<button type="submit">Download File</button>
-		</form>
-	</div>
-	<script>
-		function download(e) {
-			e.preventDefault();
-			const pwd = document.getElementById('pwd').value;
-			window.location.href = '/d/` + slug + `?password=' + encodeURIComponent(pwd);
-		}
-	</script>
-</body>
-</html>`))
+		h.renderPasswordPrompt(w, slug, file.OriginalName, http.StatusOK)
 		return
 	}
 
@@ -164,28 +170,7 @@ func (h *PublicHandler) DownloadBySlug(w http.ResponseWriter, r *http.Request) {
 	if err := h.fileService.ValidatePassword(file, password); err != nil {
 		if errors.Is(err, services.ErrPasswordRequired) {
 			// Show password prompt page
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`<!DOCTYPE html>
-<html>
-<head>
-	<title>Password Required</title>
-	<style>
-		body { font-family: sans-serif; max-width: 400px; margin: 100px auto; padding: 20px; }
-		input { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 4px; }
-		button { width: 100%; padding: 10px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; }
-		button:hover { background: #2980b9; }
-	</style>
-</head>
-<body>
-	<h2>Password Required</h2>
-	<p>This file is password protected.</p>
-	<form method="GET">
-		<input type="password" name="password" placeholder="Enter password" required autofocus>
-		<button type="submit">Download</button>
-	</form>
-</body>
-</html>`))
+			h.renderPasswordPrompt(w, slug, file.OriginalName, http.StatusUnauthorized)
 			return
 		}
 		if errors.Is(err, services.ErrInvalidPassword) {
