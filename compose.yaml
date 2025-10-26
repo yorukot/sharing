@@ -12,8 +12,9 @@ services:
     env_file:
       - .env
     environment:
-      # Override specific settings if needed
+      # Override paths for Docker environment (use absolute paths inside container)
       - DB_PATH=/app/data/sharing.db
+      - DATA_DIR=/app/data
     volumes:
       - ./data:/app/data
     healthcheck:
