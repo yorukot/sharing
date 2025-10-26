@@ -1,0 +1,23 @@
+# Environment files
+.env
+
+# Data directory
+data/
+
+# Binary
+sharing
+
+# Go build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
