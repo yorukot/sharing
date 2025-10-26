@@ -196,8 +196,8 @@ func (h *PublicHandler) DownloadBySlug(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set headers for file download
-	w.Header().Set("Content-Disposition", "attachment; filename=\""+file.OriginalName+"\"")
+	// Set headers for inline file viewing (browser preview)
+	w.Header().Set("Content-Disposition", "inline; filename=\""+file.OriginalName+"\"")
 	w.Header().Set("Content-Type", file.ContentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(file.FileSize, 10))
 

@@ -87,6 +87,55 @@
         .empty-state { text-align: center; padding: 40px; color: #7f8c8d; }
         .hidden { display: none; }
         .help-text { font-size: 12px; color: #7f8c8d; margin-top: 5px; }
+
+        /* Upload Progress Styles */
+        .progress-container {
+            margin-top: 15px;
+            padding: 15px;
+            background: white;
+            border-radius: 4px;
+            border: 1px solid #bdc3c7;
+        }
+        .progress-bar-wrapper {
+            width: 100%;
+            height: 24px;
+            background: #ecf0f1;
+            border-radius: 12px;
+            overflow: hidden;
+            position: relative;
+            margin-bottom: 8px;
+        }
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #3498db, #2980b9);
+            width: 0%;
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .progress-bar.complete {
+            background: linear-gradient(90deg, #27ae60, #229954);
+        }
+        .progress-bar.error {
+            background: linear-gradient(90deg, #e74c3c, #c0392b);
+        }
+        .progress-info {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #7f8c8d;
+        }
+        button:disabled {
+            background: #95a5a6;
+            cursor: not-allowed;
+        }
+        button:disabled:hover {
+            background: #95a5a6;
+        }
     </style>
 </head>
 <body>
@@ -117,7 +166,8 @@
 
             <div class="upload-section">
                 <h2>Upload File</h2>
-                <form hx-post="/web/upload"
+                <form id="upload-form"
+                      hx-post="/web/upload"
                       hx-target="#file-list"
                       hx-swap="innerHTML"
                       hx-encoding="multipart/form-data"
@@ -139,8 +189,21 @@
                         <label for="password">Password Protection (Optional)</label>
                         <input type="password" id="password" name="password" placeholder="Leave blank for no password">
                     </div>
-                    <button type="submit">Upload File</button>
+                    <button type="submit" id="upload-button">Upload File</button>
                 </form>
+
+                <!-- Upload Progress Bar -->
+                <div id="progress-container" class="progress-container hidden">
+                    <div class="progress-bar-wrapper">
+                        <div id="progress-bar" class="progress-bar">
+                            <span id="progress-percentage">0%</span>
+                        </div>
+                    </div>
+                    <div class="progress-info">
+                        <span id="progress-status">Uploading...</span>
+                        <span id="progress-size"></span>
+                    </div>
+                </div>
             </div>
 
             <div class="files-section">
@@ -219,6 +282,99 @@
                 alert('Share link copied: ' + url);
             });
         }
+
+        // Upload progress tracking
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+        }
+
+        function showProgress() {
+            const progressContainer = document.getElementById('progress-container');
+            const progressBar = document.getElementById('progress-bar');
+            const uploadButton = document.getElementById('upload-button');
+
+            progressContainer.classList.remove('hidden');
+            progressBar.style.width = '0%';
+            progressBar.className = 'progress-bar';
+            uploadButton.disabled = true;
+
+            document.getElementById('progress-percentage').textContent = '0%';
+            document.getElementById('progress-status').textContent = 'Uploading...';
+            document.getElementById('progress-size').textContent = '';
+        }
+
+        function hideProgress() {
+            const progressContainer = document.getElementById('progress-container');
+            const uploadButton = document.getElementById('upload-button');
+            const uploadForm = document.getElementById('upload-form');
+
+            setTimeout(() => {
+                progressContainer.classList.add('hidden');
+                uploadButton.disabled = false;
+                uploadForm.reset();
+            }, 2000);
+        }
+
+        function updateProgress(loaded, total) {
+            const percentage = Math.round((loaded / total) * 100);
+            const progressBar = document.getElementById('progress-bar');
+            const progressPercentage = document.getElementById('progress-percentage');
+            const progressSize = document.getElementById('progress-size');
+
+            progressBar.style.width = percentage + '%';
+            progressPercentage.textContent = percentage + '%';
+            progressSize.textContent = formatBytes(loaded) + ' / ' + formatBytes(total);
+        }
+
+        function setProgressComplete() {
+            const progressBar = document.getElementById('progress-bar');
+            const progressStatus = document.getElementById('progress-status');
+
+            progressBar.style.width = '100%';
+            progressBar.classList.add('complete');
+            progressStatus.textContent = 'Upload complete!';
+            document.getElementById('progress-percentage').textContent = '100%';
+        }
+
+        function setProgressError(message) {
+            const progressBar = document.getElementById('progress-bar');
+            const progressStatus = document.getElementById('progress-status');
+
+            progressBar.classList.add('error');
+            progressStatus.textContent = 'Upload failed: ' + (message || 'Unknown error');
+        }
+
+        // HTMX event listeners for upload progress
+        document.addEventListener('htmx:xhr:loadstart', function(event) {
+            if (event.detail.target.id === 'file-list') {
+                showProgress();
+            }
+        });
+
+        document.addEventListener('htmx:xhr:progress', function(event) {
+            if (event.detail.target.id === 'file-list') {
+                const loaded = event.detail.loaded;
+                const total = event.detail.total;
+                if (total > 0) {
+                    updateProgress(loaded, total);
+                }
+            }
+        });
+
+        document.addEventListener('htmx:afterRequest', function(event) {
+            if (event.detail.target.id === 'file-list') {
+                if (event.detail.successful) {
+                    setProgressComplete();
+                } else {
+                    setProgressError(event.detail.xhr.statusText);
+                }
+                hideProgress();
+            }
+        });
 
         // Check if already logged in
         if (getApiKey()) {
