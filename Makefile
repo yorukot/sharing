@@ -59,3 +59,17 @@ docker-logs: ## View Docker Compose logs
 
 docker-rebuild: ## Rebuild and restart Docker Compose services
 	docker compose up -d --build
+
+docker-clean: ## Stop services and remove volumes (WARNING: deletes all data!)
+	docker compose down -v
+
+docker-backup: ## Backup Docker volume data
+	@echo "Creating backup of sharing-data volume..."
+	@docker run --rm -v sharing_sharing-data:/data -v $(PWD):/backup alpine tar czf /backup/sharing-data-backup-$$(date +%Y%m%d-%H%M%S).tar.gz -C /data .
+	@echo "Backup created successfully"
+
+docker-restore: ## Restore Docker volume data (usage: make docker-restore FILE=backup.tar.gz)
+	@if [ -z "$(FILE)" ]; then echo "Error: Please specify backup file with FILE=backup.tar.gz"; exit 1; fi
+	@echo "Restoring backup from $(FILE)..."
+	@docker run --rm -v sharing_sharing-data:/data -v $(PWD):/backup alpine sh -c "rm -rf /data/* && tar xzf /backup/$(FILE) -C /data"
+	@echo "Restore completed successfully"

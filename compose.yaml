@@ -12,11 +12,10 @@ services:
     env_file:
       - .env
     environment:
-      # Override paths for Docker environment (use absolute paths inside container)
       - DB_PATH=/app/data/sharing.db
       - DATA_DIR=/app/data
     volumes:
-      - ./data:/app/data
+      - sharing-data:/app/data
     healthcheck:
       test:
         [
@@ -33,6 +32,10 @@ services:
       retries: 3
     networks:
       - sharing-network
+
+volumes:
+  sharing-data:
+    driver: local
 
 networks:
   sharing-network:

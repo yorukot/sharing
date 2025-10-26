@@ -251,16 +251,57 @@ Multi-stage Dockerfile:
 **Runtime Stage:**
 - alpine:latest with minimal dependencies
 - Runs as non-root user (`appuser:1000`)
-- Exposes port 8080
+- Exposes dynamic port (from PORT build arg)
 - Health check hits `/health` endpoint every 30s
-- Volume mount `/app/data` for persistence
+- Uses named Docker volume for data persistence
 
-**Usage:**
+**Docker Compose (Recommended):**
+```bash
+# Start services
+make docker-up
+# or
+docker compose up -d
+
+# View logs
+make docker-logs
+# or
+docker compose logs -f
+
+# Stop services
+make docker-down
+# or
+docker compose down
+
+# Rebuild after code changes
+make docker-rebuild
+# or
+docker compose up -d --build
+```
+
+**Data Management:**
+- Uses named volume `sharing-data` (managed by Docker)
+- No permission issues (Docker handles ownership automatically)
+- Data persists across container restarts
+
+**Backup & Restore:**
+```bash
+# Backup volume data
+make docker-backup
+
+# Restore from backup
+make docker-restore FILE=sharing-data-backup-20231026-120000.tar.gz
+
+# Clean up (WARNING: deletes all data!)
+make docker-clean
+```
+
+**Manual Docker Run (not recommended for production):**
 ```bash
 docker build -t file-sharing .
-docker run -p 8080:8080 \
+docker run -p 9910:9910 \
   -e API_KEY=your-key \
-  -v $(pwd)/data:/app/data \
+  -e PORT=9910 \
+  -v sharing-data:/app/data \
   file-sharing
 ```
 
