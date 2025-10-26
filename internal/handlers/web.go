@@ -3,13 +3,14 @@ package handlers
 import (
 	"errors"
 	"html/template"
+	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/yorukot/sharing/internal/services"
+	"github.com/yorukot/sharing/internal/storage"
 )
 
 // WebHandler handles web UI requests
@@ -19,17 +20,12 @@ type WebHandler struct {
 }
 
 // NewWebHandler creates a new web handler
-func NewWebHandler() *WebHandler {
-	dataDir := os.Getenv("DATA_DIR")
-	if dataDir == "" {
-		dataDir = "./data"
-	}
-
+func NewWebHandler(storageBackend storage.Storage) *WebHandler {
 	// Parse templates
 	tmpl := template.Must(template.ParseGlob("templates/*.html"))
 
 	return &WebHandler{
-		fileService: services.NewFileService(dataDir),
+		fileService: services.NewFileService(storageBackend),
 		templates:   tmpl,
 	}
 }
@@ -289,6 +285,17 @@ func (h *WebHandler) DownloadFileWeb(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", file.ContentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(file.FileSize, 10))
 
-	// Serve file
-	http.ServeFile(w, r, file.FilePath)
+	// Get file reader from storage
+	reader, err := h.fileService.GetFileReader(file)
+	if err != nil {
+		http.Error(w, "Failed to read file", http.StatusInternalServerError)
+		return
+	}
+	defer reader.Close()
+
+	// Copy file content to response
+	if _, err := io.Copy(w, reader); err != nil {
+		// Log error but don't send response as headers already sent
+		return
+	}
 }

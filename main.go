@@ -1,9 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -13,6 +16,7 @@ import (
 	"github.com/yorukot/sharing/internal/handlers"
 	mw "github.com/yorukot/sharing/internal/middleware"
 	"github.com/yorukot/sharing/internal/services"
+	"github.com/yorukot/sharing/internal/storage"
 )
 
 func main() {
@@ -32,14 +36,10 @@ func main() {
 		dbPath = "./data/sharing.db"
 	}
 
-	dataDir := os.Getenv("DATA_DIR")
-	if dataDir == "" {
-		dataDir = "./data"
-	}
-
-	// Ensure data directory exists
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		log.Fatalf("Failed to create data directory: %v", err)
+	// Initialize storage backend
+	storageBackend, err := initializeStorage()
+	if err != nil {
+		log.Fatalf("Failed to initialize storage: %v", err)
 	}
 
 	// Initialize database
@@ -48,13 +48,16 @@ func main() {
 	}
 	defer database.Close()
 
+	// Initialize file service with storage backend
+	fileService := services.NewFileService(storageBackend)
+
 	// Start background cleanup job
-	startCleanupJob(dataDir)
+	startCleanupJob(fileService)
 
 	// Initialize handlers
-	apiHandler := handlers.NewAPIHandler()
-	webHandler := handlers.NewWebHandler()
-	publicHandler := handlers.NewPublicHandler()
+	apiHandler := handlers.NewAPIHandler(storageBackend)
+	webHandler := handlers.NewWebHandler(storageBackend)
+	publicHandler := handlers.NewPublicHandler(storageBackend)
 
 	// Setup router
 	r := chi.NewRouter()
@@ -123,10 +126,69 @@ func main() {
 	}
 }
 
-// startCleanupJob runs a background job to clean up expired files
-func startCleanupJob(dataDir string) {
-	fileService := services.NewFileService(dataDir)
+// initializeStorage creates and configures the storage backend based on environment variables
+func initializeStorage() (storage.Storage, error) {
+	storageType := strings.ToLower(os.Getenv("STORAGE_TYPE"))
+	if storageType == "" {
+		storageType = "local" // Default to local storage
+	}
 
+	switch storageType {
+	case "local":
+		dataDir := os.Getenv("DATA_DIR")
+		if dataDir == "" {
+			dataDir = "./data"
+		}
+		log.Printf("Using local storage: %s", dataDir)
+		return storage.NewLocalStorage(dataDir)
+
+	case "s3":
+		endpoint := os.Getenv("S3_ENDPOINT")
+		bucket := os.Getenv("S3_BUCKET")
+		region := os.Getenv("S3_REGION")
+		accessKeyID := os.Getenv("S3_ACCESS_KEY_ID")
+		secretAccessKey := os.Getenv("S3_SECRET_ACCESS_KEY")
+		usePathStyleStr := os.Getenv("S3_USE_PATH_STYLE")
+
+		// Validate required S3 configuration
+		if bucket == "" {
+			return nil, fmt.Errorf("S3_BUCKET is required when using S3 storage")
+		}
+		if region == "" {
+			region = "us-east-1" // Default region
+		}
+		if accessKeyID == "" || secretAccessKey == "" {
+			return nil, fmt.Errorf("S3_ACCESS_KEY_ID and S3_SECRET_ACCESS_KEY are required when using S3 storage")
+		}
+
+		usePathStyle := false
+		if usePathStyleStr != "" {
+			var err error
+			usePathStyle, err = strconv.ParseBool(usePathStyleStr)
+			if err != nil {
+				log.Printf("Warning: invalid S3_USE_PATH_STYLE value, using default (false)")
+			}
+		}
+
+		config := storage.S3Config{
+			Endpoint:        endpoint,
+			Bucket:          bucket,
+			Region:          region,
+			AccessKeyID:     accessKeyID,
+			SecretAccessKey: secretAccessKey,
+			UsePathStyle:    usePathStyle,
+		}
+
+		log.Printf("Using S3 storage: bucket=%s, region=%s, endpoint=%s", bucket, region, endpoint)
+		return storage.NewS3Storage(config)
+
+	default:
+		return nil, fmt.Errorf("unsupported storage type: %s (supported: local, s3)", storageType)
+	}
+}
+
+// startCleanupJob runs a background job to clean up expired files
+func startCleanupJob(fileService *services.FileService) {
 	// Run cleanup every hour
 	ticker := time.NewTicker(1 * time.Hour)
 

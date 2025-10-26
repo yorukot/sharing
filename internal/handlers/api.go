@@ -3,13 +3,14 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/yorukot/sharing/internal/services"
+	"github.com/yorukot/sharing/internal/storage"
 )
 
 // APIHandler handles API requests
@@ -18,13 +19,9 @@ type APIHandler struct {
 }
 
 // NewAPIHandler creates a new API handler
-func NewAPIHandler() *APIHandler {
-	dataDir := os.Getenv("DATA_DIR")
-	if dataDir == "" {
-		dataDir = "./data"
-	}
+func NewAPIHandler(storageBackend storage.Storage) *APIHandler {
 	return &APIHandler{
-		fileService: services.NewFileService(dataDir),
+		fileService: services.NewFileService(storageBackend),
 	}
 }
 
@@ -238,8 +235,19 @@ func (h *APIHandler) DownloadFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", file.ContentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(file.FileSize, 10))
 
-	// Serve file
-	http.ServeFile(w, r, file.FilePath)
+	// Get file reader from storage
+	reader, err := h.fileService.GetFileReader(file)
+	if err != nil {
+		respondError(w, "Failed to read file", http.StatusInternalServerError)
+		return
+	}
+	defer reader.Close()
+
+	// Copy file content to response
+	if _, err := io.Copy(w, reader); err != nil {
+		// Log error but don't send response as headers already sent
+		return
+	}
 }
 
 // Helper functions

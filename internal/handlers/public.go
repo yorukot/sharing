@@ -3,12 +3,13 @@ package handlers
 import (
 	"errors"
 	"html/template"
+	"io"
 	"net/http"
-	"os"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/yorukot/sharing/internal/services"
+	"github.com/yorukot/sharing/internal/storage"
 )
 
 // PublicHandler handles public sharing routes (no API key required)
@@ -18,12 +19,7 @@ type PublicHandler struct {
 }
 
 // NewPublicHandler creates a new public handler
-func NewPublicHandler() *PublicHandler {
-	dataDir := os.Getenv("DATA_DIR")
-	if dataDir == "" {
-		dataDir = "./data"
-	}
-
+func NewPublicHandler(storageBackend storage.Storage) *PublicHandler {
 	// Parse templates for public pages
 	tmpl, err := template.ParseGlob("templates/*.html")
 	if err != nil {
@@ -32,7 +28,7 @@ func NewPublicHandler() *PublicHandler {
 	}
 
 	return &PublicHandler{
-		fileService: services.NewFileService(dataDir),
+		fileService: services.NewFileService(storageBackend),
 		templates:   tmpl,
 	}
 }
@@ -205,6 +201,17 @@ func (h *PublicHandler) DownloadBySlug(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", file.ContentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(file.FileSize, 10))
 
-	// Serve file
-	http.ServeFile(w, r, file.FilePath)
+	// Get file reader from storage
+	reader, err := h.fileService.GetFileReader(file)
+	if err != nil {
+		http.Error(w, "Failed to read file", http.StatusInternalServerError)
+		return
+	}
+	defer reader.Close()
+
+	// Copy file content to response
+	if _, err := io.Copy(w, reader); err != nil {
+		// Log error but don't send response as headers already sent
+		return
+	}
 }

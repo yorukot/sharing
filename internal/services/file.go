@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/yorukot/sharing/internal/database"
 	"github.com/yorukot/sharing/internal/models"
+	"github.com/yorukot/sharing/internal/storage"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -32,31 +32,23 @@ var slugRegex = regexp.MustCompile(`^[a-z0-9-]+$`)
 
 // FileService handles file operations
 type FileService struct {
-	dataDir string
+	storage storage.Storage
 }
 
 // NewFileService creates a new file service instance
-func NewFileService(dataDir string) *FileService {
+func NewFileService(storageBackend storage.Storage) *FileService {
 	return &FileService{
-		dataDir: dataDir,
+		storage: storageBackend,
 	}
 }
 
-// SaveFile saves an uploaded file to disk and creates a database record
+// SaveFile saves an uploaded file to storage and creates a database record
 func (s *FileService) SaveFile(fileHeader *multipart.FileHeader, expiresAt *time.Time, password *string, slug *string) (*models.File, error) {
 	// Generate unique filename
 	uniqueFilename, err := s.generateUniqueFilename(fileHeader.Filename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate filename: %w", err)
 	}
-
-	// Ensure data directory exists
-	if err := os.MkdirAll(s.dataDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create data directory: %w", err)
-	}
-
-	// Full path on disk
-	filePath := filepath.Join(s.dataDir, uniqueFilename)
 
 	// Open uploaded file
 	src, err := fileHeader.Open()
@@ -65,17 +57,10 @@ func (s *FileService) SaveFile(fileHeader *multipart.FileHeader, expiresAt *time
 	}
 	defer src.Close()
 
-	// Create destination file
-	dst, err := os.Create(filePath)
+	// Save to storage backend
+	storagePath, err := s.storage.Save(src, uniqueFilename, fileHeader.Size)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create file: %w", err)
-	}
-	defer dst.Close()
-
-	// Copy file contents
-	if _, err := io.Copy(dst, src); err != nil {
-		os.Remove(filePath) // Clean up on error
-		return nil, fmt.Errorf("failed to save file: %w", err)
+		return nil, fmt.Errorf("failed to save file to storage: %w", err)
 	}
 
 	// Hash password if provided
@@ -83,7 +68,7 @@ func (s *FileService) SaveFile(fileHeader *multipart.FileHeader, expiresAt *time
 	if password != nil && *password != "" {
 		hash, err := bcrypt.GenerateFromPassword([]byte(*password), bcrypt.DefaultCost)
 		if err != nil {
-			os.Remove(filePath) // Clean up on error
+			s.storage.Delete(storagePath) // Clean up on error
 			return nil, fmt.Errorf("failed to hash password: %w", err)
 		}
 		hashStr := string(hash)
@@ -95,11 +80,11 @@ func (s *FileService) SaveFile(fileHeader *multipart.FileHeader, expiresAt *time
 	if slug != nil && *slug != "" {
 		// User provided custom slug - validate and check uniqueness
 		if err := s.validateSlug(*slug); err != nil {
-			os.Remove(filePath) // Clean up on error
+			s.storage.Delete(storagePath) // Clean up on error
 			return nil, err
 		}
 		if err := s.checkSlugUnique(*slug); err != nil {
-			os.Remove(filePath) // Clean up on error
+			s.storage.Delete(storagePath) // Clean up on error
 			return nil, err
 		}
 		fileSlug = *slug
@@ -107,7 +92,7 @@ func (s *FileService) SaveFile(fileHeader *multipart.FileHeader, expiresAt *time
 		// Auto-generate slug from filename
 		fileSlug, err = s.generateSlugFromFilename(fileHeader.Filename)
 		if err != nil {
-			os.Remove(filePath) // Clean up on error
+			s.storage.Delete(storagePath) // Clean up on error
 			return nil, fmt.Errorf("failed to generate slug: %w", err)
 		}
 	}
@@ -116,7 +101,7 @@ func (s *FileService) SaveFile(fileHeader *multipart.FileHeader, expiresAt *time
 	file := &models.File{
 		Filename:     uniqueFilename,
 		OriginalName: fileHeader.Filename,
-		FilePath:     filePath,
+		FilePath:     storagePath,
 		FileSize:     fileHeader.Size,
 		ContentType:  fileHeader.Header.Get("Content-Type"),
 		Slug:         fileSlug,
@@ -125,7 +110,7 @@ func (s *FileService) SaveFile(fileHeader *multipart.FileHeader, expiresAt *time
 	}
 
 	if err := database.DB.Create(file).Error; err != nil {
-		os.Remove(filePath) // Clean up on error
+		s.storage.Delete(storagePath) // Clean up on error
 		return nil, fmt.Errorf("failed to create database record: %w", err)
 	}
 
@@ -229,16 +214,16 @@ func (s *FileService) UpdateFile(id uint, expiresAt *time.Time, password *string
 	return s.GetFile(id)
 }
 
-// DeleteFile deletes a file from disk and database
+// DeleteFile deletes a file from storage and database
 func (s *FileService) DeleteFile(id uint) error {
 	file, err := s.GetFile(id)
 	if err != nil {
 		return err
 	}
 
-	// Delete file from disk
-	if err := os.Remove(file.FilePath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to delete file from disk: %w", err)
+	// Delete file from storage
+	if err := s.storage.Delete(file.FilePath); err != nil {
+		return fmt.Errorf("failed to delete file from storage: %w", err)
 	}
 
 	// Delete from database (soft delete)
@@ -247,6 +232,11 @@ func (s *FileService) DeleteFile(id uint) error {
 	}
 
 	return nil
+}
+
+// GetFileReader returns a reader for the file content from storage
+func (s *FileService) GetFileReader(file *models.File) (io.ReadCloser, error) {
+	return s.storage.Get(file.FilePath)
 }
 
 // ValidatePassword checks if the provided password matches the file's password hash
@@ -266,7 +256,7 @@ func (s *FileService) ValidatePassword(file *models.File, password string) error
 	return nil
 }
 
-// CleanupExpiredFiles removes expired files from disk and database
+// CleanupExpiredFiles removes expired files from storage and database
 func (s *FileService) CleanupExpiredFiles() error {
 	var expiredFiles []models.File
 	if err := database.DB.Where("expires_at IS NOT NULL AND expires_at <= ?", time.Now()).
@@ -275,8 +265,8 @@ func (s *FileService) CleanupExpiredFiles() error {
 	}
 
 	for _, file := range expiredFiles {
-		// Delete file from disk
-		if err := os.Remove(file.FilePath); err != nil && !os.IsNotExist(err) {
+		// Delete file from storage
+		if err := s.storage.Delete(file.FilePath); err != nil {
 			// Log error but continue
 			fmt.Printf("Warning: failed to delete expired file %s: %v\n", file.FilePath, err)
 		}
