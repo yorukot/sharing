@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
@@ -34,7 +35,7 @@ func NewPublicHandler(storageBackend storage.Storage) *PublicHandler {
 }
 
 // renderPasswordPrompt renders a unified password prompt page
-func (h *PublicHandler) renderPasswordPrompt(w http.ResponseWriter, slug, filename string, statusCode int) {
+func (h *PublicHandler) renderPasswordPrompt(w http.ResponseWriter, originalName, filename string, statusCode int) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(statusCode)
 	w.Write([]byte(`<!DOCTYPE html>
@@ -112,7 +113,7 @@ func (h *PublicHandler) renderPasswordPrompt(w http.ResponseWriter, slug, filena
 		function download(e) {
 			e.preventDefault();
 			const pwd = document.getElementById('pwd').value;
-			window.location.href = '/d/` + slug + `?password=' + encodeURIComponent(pwd);
+			window.location.href = '/d/` + originalName + `?password=' + encodeURIComponent(pwd);
 		}
 	</script>
 </body>
@@ -139,19 +140,28 @@ func (h *PublicHandler) SharePage(w http.ResponseWriter, r *http.Request) {
 
 	// If password protected, show simple password prompt
 	if file.HasPassword() {
-		h.renderPasswordPrompt(w, slug, file.OriginalName, http.StatusOK)
+		// For password prompt, always use original filename in the /d/ URL
+		h.renderPasswordPrompt(w, file.OriginalName, file.OriginalName, http.StatusOK)
 		return
 	}
 
-	// No password, redirect directly to download
-	http.Redirect(w, r, "/d/"+slug, http.StatusFound)
+	// No password, redirect directly to download using original filename
+	// URL encode the filename to handle Unicode characters properly
+	http.Redirect(w, r, "/d/"+url.PathEscape(file.OriginalName), http.StatusFound)
 }
 
-// DownloadBySlug handles file download via slug (public, no API key required)
-func (h *PublicHandler) DownloadBySlug(w http.ResponseWriter, r *http.Request) {
-	slug := chi.URLParam(r, "slug")
+// DownloadByOriginalName handles file download via original filename (public, no API key required)
+func (h *PublicHandler) DownloadByOriginalName(w http.ResponseWriter, r *http.Request) {
+	encodedFilename := chi.URLParam(r, "filename")
 
-	file, err := h.fileService.GetFileBySlug(slug)
+	// URL decode the filename to handle Unicode characters
+	filename, err := url.QueryUnescape(encodedFilename)
+	if err != nil {
+		// If decoding fails, use the original
+		filename = encodedFilename
+	}
+
+	file, err := h.fileService.GetFileByOriginalName(filename)
 	if err != nil {
 		if errors.Is(err, services.ErrFileNotFound) {
 			http.Error(w, "File not found", http.StatusNotFound)
@@ -170,7 +180,7 @@ func (h *PublicHandler) DownloadBySlug(w http.ResponseWriter, r *http.Request) {
 	if err := h.fileService.ValidatePassword(file, password); err != nil {
 		if errors.Is(err, services.ErrPasswordRequired) {
 			// Show password prompt page
-			h.renderPasswordPrompt(w, slug, file.OriginalName, http.StatusUnauthorized)
+			h.renderPasswordPrompt(w, file.OriginalName, file.OriginalName, http.StatusUnauthorized)
 			return
 		}
 		if errors.Is(err, services.ErrInvalidPassword) {
@@ -181,7 +191,7 @@ func (h *PublicHandler) DownloadBySlug(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set headers for inline file viewing (browser preview)
+	// Set headers for inline viewing (browser preview instead of download)
 	w.Header().Set("Content-Disposition", "inline; filename=\""+file.OriginalName+"\"")
 	w.Header().Set("Content-Type", file.ContentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(file.FileSize, 10))

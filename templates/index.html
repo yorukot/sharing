@@ -292,6 +292,22 @@
             return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
         }
 
+        function formatAllFileSizes() {
+            // Format all file size elements on the page
+            document.querySelectorAll('.file-size').forEach(el => {
+                const bytes = parseInt(el.getAttribute('data-bytes'));
+                if (!isNaN(bytes)) {
+                    el.textContent = formatBytes(bytes);
+                }
+            });
+        }
+
+        // Format file sizes when HTMX loads content
+        document.addEventListener('htmx:afterSwap', formatAllFileSizes);
+
+        // Format file sizes on initial page load
+        document.addEventListener('DOMContentLoaded', formatAllFileSizes);
+
         function showProgress() {
             const progressContainer = document.getElementById('progress-container');
             const progressBar = document.getElementById('progress-bar');
@@ -423,7 +439,7 @@
 <tr id="file-{{.ID}}">
     <td>{{.OriginalName}}</td>
     <td><span class="share-link">/{{.Slug}}</span></td>
-    <td>{{.FileSize}} bytes</td>
+    <td><span class="file-size" data-bytes="{{.FileSize}}">{{.FileSize}} bytes</span></td>
     <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
     <td>
         {{if .ExpiresAt}}

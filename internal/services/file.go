@@ -28,7 +28,7 @@ var (
 	ErrInvalidSlug      = errors.New("invalid slug format")
 )
 
-var slugRegex = regexp.MustCompile(`^[a-z0-9-]+$`)
+var slugRegex = regexp.MustCompile(`^[a-zA-Z0-9\p{L}\p{N}._-]+$`)
 
 // FileService handles file operations
 type FileService struct {
@@ -76,7 +76,9 @@ func (s *FileService) SaveFile(fileHeader *multipart.FileHeader, expiresAt *time
 	}
 
 	// Generate or validate slug
-	fileSlug := ""
+	var fileSlug string
+	var uniqueOriginalName string
+
 	if slug != nil && *slug != "" {
 		// User provided custom slug - validate and check uniqueness
 		if err := s.validateSlug(*slug); err != nil {
@@ -88,19 +90,23 @@ func (s *FileService) SaveFile(fileHeader *multipart.FileHeader, expiresAt *time
 			return nil, err
 		}
 		fileSlug = *slug
+		// Make original filename unique if duplicate exists
+		uniqueOriginalName = s.makeOriginalNameUnique(fileHeader.Filename, uniqueFilename)
 	} else {
-		// Auto-generate slug from filename
-		fileSlug, err = s.generateSlugFromFilename(fileHeader.Filename)
+		// No custom slug provided - use original filename as slug
+		// Make both slug and original name unique together (same value)
+		uniqueOriginalName, err = s.makeFilenameAndSlugUnique(fileHeader.Filename, uniqueFilename)
 		if err != nil {
 			s.storage.Delete(storagePath) // Clean up on error
-			return nil, fmt.Errorf("failed to generate slug: %w", err)
+			return nil, fmt.Errorf("failed to generate unique filename: %w", err)
 		}
+		fileSlug = uniqueOriginalName // Slug is the same as the unique original name
 	}
 
 	// Create database record
 	file := &models.File{
 		Filename:     uniqueFilename,
-		OriginalName: fileHeader.Filename,
+		OriginalName: uniqueOriginalName,
 		FilePath:     storagePath,
 		FileSize:     fileHeader.Size,
 		ContentType:  fileHeader.Header.Get("Content-Type"),
@@ -138,6 +144,23 @@ func (s *FileService) GetFile(id uint) (*models.File, error) {
 func (s *FileService) GetFileBySlug(slug string) (*models.File, error) {
 	var file models.File
 	if err := database.DB.Where("slug = ?", slug).First(&file).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, ErrFileNotFound
+		}
+		return nil, err
+	}
+
+	if file.IsExpired() {
+		return nil, ErrFileExpired
+	}
+
+	return &file, nil
+}
+
+// GetFileByOriginalName retrieves a file by its original filename
+func (s *FileService) GetFileByOriginalName(originalName string) (*models.File, error) {
+	var file models.File
+	if err := database.DB.Where("original_name = ?", originalName).First(&file).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrFileNotFound
 		}
@@ -297,6 +320,69 @@ func (s *FileService) generateUniqueFilename(originalName string) (string, error
 	return uniqueID + ext, nil
 }
 
+// makeOriginalNameUnique ensures the original filename is unique by appending hex prefix if needed
+func (s *FileService) makeOriginalNameUnique(originalName, uniqueFilename string) string {
+	// Check if original name already exists
+	var count int64
+	database.DB.Model(&models.File{}).Where("original_name = ?", originalName).Count(&count)
+
+	if count == 0 {
+		// No duplicate, return as-is
+		return originalName
+	}
+
+	// Duplicate found - append first 5 chars of unique filename
+	ext := filepath.Ext(originalName)
+	basename := strings.TrimSuffix(originalName, ext)
+
+	// Extract first 5 chars from the hex filename (excluding extension)
+	hexFilename := strings.TrimSuffix(uniqueFilename, filepath.Ext(uniqueFilename))
+	prefix := ""
+	if len(hexFilename) >= 5 {
+		prefix = hexFilename[:5]
+	} else {
+		prefix = hexFilename
+	}
+
+	return fmt.Sprintf("%s-%s%s", basename, prefix, ext)
+}
+
+// makeFilenameAndSlugUnique ensures both the original filename and slug are unique (returns same value for both)
+func (s *FileService) makeFilenameAndSlugUnique(originalName, uniqueFilename string) (string, error) {
+	// Check if original name already exists in either original_name or slug columns
+	var count int64
+	database.DB.Model(&models.File{}).Where("original_name = ? OR slug = ?", originalName, originalName).Count(&count)
+
+	if count == 0 {
+		// No duplicate, return as-is
+		return originalName, nil
+	}
+
+	// Duplicate found - append random suffix before extension
+	ext := filepath.Ext(originalName)
+	basename := strings.TrimSuffix(originalName, ext)
+
+	// Try up to 100 times to find a unique name
+	for i := 0; i < 100; i++ {
+		// Generate random suffix
+		randomBytes := make([]byte, 2)
+		if _, err := rand.Read(randomBytes); err != nil {
+			return "", err
+		}
+		suffix := hex.EncodeToString(randomBytes)
+
+		uniqueName := fmt.Sprintf("%s-%s%s", basename, suffix, ext)
+
+		// Check if this is unique
+		database.DB.Model(&models.File{}).Where("original_name = ? OR slug = ?", uniqueName, uniqueName).Count(&count)
+		if count == 0 {
+			return uniqueName, nil
+		}
+	}
+
+	return "", fmt.Errorf("failed to generate unique filename after 100 attempts")
+}
+
 // validateSlug checks if a slug is in valid format
 func (s *FileService) validateSlug(slug string) error {
 	if len(slug) < 1 || len(slug) > 100 {
@@ -320,18 +406,12 @@ func (s *FileService) checkSlugUnique(slug string) error {
 
 // generateSlugFromFilename creates a URL-safe slug from a filename
 func (s *FileService) generateSlugFromFilename(filename string) (string, error) {
-	// Remove extension
-	name := strings.TrimSuffix(filename, filepath.Ext(filename))
-
-	// Convert to lowercase
-	slug := strings.ToLower(name)
+	// Keep the full filename including extension as the slug
+	slug := filename
 
 	// Replace spaces and underscores with hyphens
 	slug = strings.ReplaceAll(slug, " ", "-")
 	slug = strings.ReplaceAll(slug, "_", "-")
-
-	// Remove any non-alphanumeric characters except hyphens
-	slug = regexp.MustCompile(`[^a-z0-9-]+`).ReplaceAllString(slug, "")
 
 	// Remove consecutive hyphens
 	slug = regexp.MustCompile(`-+`).ReplaceAllString(slug, "-")
@@ -339,8 +419,8 @@ func (s *FileService) generateSlugFromFilename(filename string) (string, error) 
 	// Trim hyphens from start and end
 	slug = strings.Trim(slug, "-")
 
-	// If slug is empty or invalid, generate random
-	if slug == "" || len(slug) < 3 {
+	// If slug is empty, generate random
+	if slug == "" {
 		randomBytes := make([]byte, 4)
 		rand.Read(randomBytes)
 		slug = "file-" + hex.EncodeToString(randomBytes)
@@ -353,10 +433,12 @@ func (s *FileService) generateSlugFromFilename(filename string) (string, error) 
 			return slug, nil
 		}
 
-		// Append random suffix
+		// Append random suffix (before extension if it exists)
+		ext := filepath.Ext(originalSlug)
+		basename := strings.TrimSuffix(originalSlug, ext)
 		randomBytes := make([]byte, 2)
 		rand.Read(randomBytes)
-		slug = originalSlug + "-" + hex.EncodeToString(randomBytes)
+		slug = basename + "-" + hex.EncodeToString(randomBytes) + ext
 	}
 
 	return "", fmt.Errorf("failed to generate unique slug")

@@ -110,10 +110,10 @@ func main() {
 	})
 
 	// Public sharing routes (no API key required)
-	// Direct download route
-	r.Get("/d/{slug}", publicHandler.DownloadBySlug)
+	// Direct download route by original filename
+	r.Get("/d/{filename}", publicHandler.DownloadByOriginalName)
 
-	// Share page route (catch-all, must be last)
+	// Share page route by slug (catch-all, must be last)
 	r.Get("/{slug}", publicHandler.SharePage)
 
 	// Start server

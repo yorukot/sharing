@@ -15,6 +15,7 @@ sharing
 *.dylib
 *.test
 *.out
+/tmp
 
 # IDE
 .idea/
