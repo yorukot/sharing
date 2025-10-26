@@ -350,13 +350,15 @@
 
         // HTMX event listeners for upload progress
         document.addEventListener('htmx:xhr:loadstart', function(event) {
-            if (event.detail.target.id === 'file-list') {
+            const form = event.detail.elt;
+            if (form && form.id === 'upload-form') {
                 showProgress();
             }
         });
 
         document.addEventListener('htmx:xhr:progress', function(event) {
-            if (event.detail.target.id === 'file-list') {
+            const form = event.detail.elt;
+            if (form && form.id === 'upload-form') {
                 const loaded = event.detail.loaded;
                 const total = event.detail.total;
                 if (total > 0) {
@@ -366,11 +368,12 @@
         });
 
         document.addEventListener('htmx:afterRequest', function(event) {
-            if (event.detail.target.id === 'file-list') {
+            const form = event.detail.elt;
+            if (form && form.id === 'upload-form') {
                 if (event.detail.successful) {
                     setProgressComplete();
                 } else {
-                    setProgressError(event.detail.xhr.statusText);
+                    setProgressError(event.detail.xhr?.statusText || 'Unknown error');
                 }
                 hideProgress();
             }
