@@ -47,3 +47,15 @@ docker-build: ## Build Docker image
 
 docker-run: ## Run Docker container
 	docker run -p 8080:8080 -v $(PWD)/data:/app/data file-sharing:latest
+
+docker-up: ## Start services with Docker Compose
+	docker-compose up -d
+
+docker-down: ## Stop services with Docker Compose
+	docker-compose down
+
+docker-logs: ## View Docker Compose logs
+	docker-compose logs -f
+
+docker-rebuild: ## Rebuild and restart Docker Compose services
+	docker-compose up -d --build

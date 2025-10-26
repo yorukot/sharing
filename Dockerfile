@@ -22,6 +22,9 @@ RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o sharing main.go
 # Runtime stage
 FROM alpine:latest
 
+# Accept PORT as build argument
+ARG PORT=8080
+
 # Install runtime dependencies
 RUN apk --no-cache add ca-certificates sqlite-libs
 
@@ -34,6 +37,9 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /app/sharing .
 
+# Copy templates directory
+COPY templates ./templates
+
 # Create data directory and set permissions
 RUN mkdir -p /app/data && \
     chown -R appuser:appuser /app
@@ -41,12 +47,12 @@ RUN mkdir -p /app/data && \
 # Switch to non-root user
 USER appuser
 
-# Expose port
-EXPOSE 8080
+# Expose port (dynamic based on build arg)
+EXPOSE ${PORT}
 
-# Health check
+# Health check (dynamic based on build arg)
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/health || exit 1
 
 # Run the application
 CMD ["./sharing"]
